@@ -63,8 +63,8 @@ export async function resolveGoogleNewsUrlAndImage(browser: any, googleNewsUrl: 
     }
 }
 
-export async function fetchGoogleNewsTrends(query?: string) {
-    let browser: Browser | undefined;
+export async function fetchGoogleNewsTrends(query?: string, limit: number = 5) {
+    let browser: any;
     try {
         const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;
         const url = SCRAPER_CONFIG.googleNewsRssUrl(encodeURIComponent(searchQuery));
@@ -82,8 +82,8 @@ export async function fetchGoogleNewsTrends(query?: string) {
         // Launch chromium browser instance to resolve redirects
         browser = await chromium.launch({ headless: true });
         
-        // Take top 5 items to keep it extremely fast and responsive
-        const topItems = items.slice(0, 5);
+        // Take top items matching the limit (capped at 100)
+        const topItems = items.slice(0, Math.min(100, limit));
         
         const detailPromises = topItems.map(async (item) => {
             const titleMatch = item.match(/<title>(.*?)<\/title>/);

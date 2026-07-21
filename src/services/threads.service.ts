@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 import { SCRAPER_CONFIG } from '../config/scraper';
 
-export async function scrapeThreadsTrends() {
+export async function scrapeThreadsTrends(limit: number = 10) {
     let browser;
     try {
         browser = await chromium.launch({ headless: true });
@@ -20,8 +20,8 @@ export async function scrapeThreadsTrends() {
         
         const systemWords = SCRAPER_CONFIG.systemWords;
         
-        const threadsTrends = await page.evaluate((words) => {
-            const results: { title: string; url: string; image: string | null; content: string | null; source: string }[] = [];
+        const threadsTrends = await page.evaluate(({ words, limitVal }) => {
+            const results: { title: string; url: string; image: string | null; source: string }[] = [];
             const elements = Array.from(document.querySelectorAll('a, div[role="link"]'));
             
             elements.forEach((el) => {
@@ -39,15 +39,14 @@ export async function scrapeThreadsTrends() {
                             title: cleanText,
                             url: 'https://www.threads.net/search?q=' + encodeURIComponent(cleanText),
                             image: null,
-                            content: null,
                             source: 'Threads'
                           });
                       }
                   }
               });
               
-              return results.slice(0, 10);
-          }, systemWords);
+              return results.slice(0, limitVal);
+          }, { words: systemWords, limitVal: limit });
 
           await browser.close();
           return threadsTrends;
