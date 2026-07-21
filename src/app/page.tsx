@@ -23,6 +23,10 @@ export default function Home() {
     const [currentPage, setCurrentPage] = useState<number>(1);
     const itemsPerPage = 6;
 
+    // API Guide Tab & Copy State
+    const [activeTab, setActiveTab] = useState<'curl' | 'js' | 'php' | 'python' | 'response'>('curl');
+    const [copied, setCopied] = useState<boolean>(false);
+
     const fetchTrending = async (limit: number) => {
         setLoading(true);
         setError(null);
@@ -75,6 +79,46 @@ export default function Home() {
             setCurrentPage(newPage);
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
+    };
+
+    // Code Snippets for API Integration Guide
+    const codeSnippets = {
+        curl: `curl -X GET "http://localhost:3000/api/trending?limit=${fetchLimit}"`,
+        js: `const response = await fetch("http://localhost:3000/api/trending?limit=${fetchLimit}");
+const data = await response.json();
+console.log(data);`,
+        php: `use Illuminate\\Support\\Facades\\Http;
+
+$response = Http::get('http://localhost:3000/api/trending', [
+    'limit' => ${fetchLimit},
+]);
+
+$articles = $response->json();`,
+        python: `import requests
+
+response = requests.get("http://localhost:3000/api/trending", params={"limit": ${fetchLimit}})
+data = response.json()
+print(data)`,
+        response: `{
+  "status": "success",
+  "source": "${source || 'Threads Scraping'}",
+  "total": ${data.length || 5},
+  "data": [
+    {
+      "title": "${data[0]?.title || 'Sample Trending Article Title'}",
+      "url": "${data[0]?.url || 'https://www.threads.net/...'}",
+      "image": "${data[0]?.image || 'https://example.com/thumb.jpg'}",
+      "content": "${data[0]?.content ? data[0].content.slice(0, 80) + '...' : 'Extracted article content snippet...'}",
+      "source": "${data[0]?.source || 'Threads'}"
+    }
+  ]
+}`
+    };
+
+    const handleCopy = (text: string) => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     };
 
     return (
@@ -233,21 +277,35 @@ export default function Home() {
                                             Prev
                                         </button>
 
-                                        {Array.from({ length: totalPages }).map((_, i) => {
-                                            const pageNum = i + 1;
-                                            return (
-                                                <button
-                                                    key={pageNum}
-                                                    type="button"
-                                                    onClick={() => handlePageChange(pageNum)}
-                                                    className={`${styles.pageButton} ${
-                                                        currentPage === pageNum ? styles.pageButtonActive : ''
-                                                    }`}
-                                                >
-                                                    {pageNum}
-                                                </button>
+                                        {(() => {
+                                            const pages: (number | string)[] = [];
+                                            const siblings = 1;
+                                            const left = Math.max(2, currentPage - siblings);
+                                            const right = Math.min(totalPages - 1, currentPage + siblings);
+
+                                            pages.push(1);
+                                            if (left > 2) pages.push('…start');
+                                            for (let i = left; i <= right; i++) pages.push(i);
+                                            if (right < totalPages - 1) pages.push('…end');
+                                            if (totalPages > 1) pages.push(totalPages);
+
+                                            return pages.map((p) =>
+                                                typeof p === 'string' ? (
+                                                    <span key={p} className={styles.pageEllipsis}>…</span>
+                                                ) : (
+                                                    <button
+                                                        key={p}
+                                                        type="button"
+                                                        onClick={() => handlePageChange(p)}
+                                                        className={`${styles.pageButton} ${
+                                                            currentPage === p ? styles.pageButtonActive : ''
+                                                        }`}
+                                                    >
+                                                        {p}
+                                                    </button>
+                                                )
                                             );
-                                        })}
+                                        })()}
 
                                         <button
                                             type="button"
@@ -263,6 +321,71 @@ export default function Home() {
                         </>
                     )}
                 </main>
+
+                {/* API Quickstart & Integration Documentation Section */}
+                <section className={styles.apiSection}>
+                    <div className={styles.apiHeader}>
+                        <div>
+                            <h2 className={styles.apiTitle}>API Quickstart & Integration</h2>
+                            <p className={styles.apiDescription}>
+                                Consume this REST API endpoint directly in your Laravel, Node.js, or Python backend.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className={styles.tabList}>
+                        {(['curl', 'js', 'php', 'python', 'response'] as const).map((tab) => (
+                            <button
+                                key={tab}
+                                type="button"
+                                onClick={() => setActiveTab(tab)}
+                                className={`${styles.tabButton} ${
+                                    activeTab === tab ? styles.tabButtonActive : ''
+                                }`}
+                            >
+                                {tab === 'curl'
+                                    ? 'cURL'
+                                    : tab === 'js'
+                                    ? 'JavaScript / Node'
+                                    : tab === 'php'
+                                    ? 'Laravel / PHP'
+                                    : tab === 'python'
+                                    ? 'Python'
+                                    : 'JSON Response'}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className={styles.codeBlockContainer}>
+                        <button
+                            type="button"
+                            onClick={() => handleCopy(codeSnippets[activeTab])}
+                            className={styles.copyButton}
+                        >
+                            {copied ? 'Copied!' : 'Copy Code'}
+                        </button>
+                        <pre className={styles.codeText}>{codeSnippets[activeTab]}</pre>
+                    </div>
+
+                    <table className={styles.paramTable}>
+                        <thead>
+                            <tr>
+                                <th>Parameter</th>
+                                <th>Type</th>
+                                <th>Default</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code className={styles.paramCode}>limit</code></td>
+                                <td>integer</td>
+                                <td>10</td>
+                                <td>Number of trending items to fetch (1 - 100).</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
             </div>
         </div>
     );
