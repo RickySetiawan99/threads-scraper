@@ -21,10 +21,10 @@ export async function resolveGoogleNewsUrlAndImage(browser: any, googleNewsUrl: 
             }
         });
 
-        // Navigate to the Google News URL
+        // Navigate to the Google News URL with tighter timeout
         await page.goto(googleNewsUrl, {
             waitUntil: 'domcontentloaded',
-            timeout: 15000
+            timeout: 8000
         });
 
         // Poll until URL redirects away from news.google.com or timeout (max 5 seconds)
@@ -79,8 +79,11 @@ export async function fetchGoogleNewsTrends(query?: string, limit: number = 5) {
             return [];
         }
 
-        // Launch chromium browser instance to resolve redirects
-        browser = await chromium.launch({ headless: true });
+        // Launch chromium browser instance with performance optimization args
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run']
+        });
         
         // Take top items matching the limit (capped at 100)
         const topItems = items.slice(0, Math.min(100, limit));

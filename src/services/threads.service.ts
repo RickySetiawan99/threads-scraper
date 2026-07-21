@@ -4,7 +4,10 @@ import { SCRAPER_CONFIG } from '../config/scraper';
 export async function scrapeThreadsTrends(limit: number = 10) {
     let browser;
     try {
-        browser = await chromium.launch({ headless: true });
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run']
+        });
         const context = await browser.newContext({
             userAgent: SCRAPER_CONFIG.userAgent,
             locale: SCRAPER_CONFIG.locale
