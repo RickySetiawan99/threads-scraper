@@ -248,8 +248,16 @@ class ScraperWebhookController extends Controller
         Log::info("Received Scraped Data for Job ID: " . $payload['jobId']);
 
         foreach ($payload['data'] as $article) {
-            // Save or update to Laravel DB
-            // Article::updateOrCreate(['url' => $article['url']], [...]);
+            // Save or update news article with publisher og:image to Laravel DB
+            \\App\\Models\\Article::updateOrCreate(
+                ['url' => $article['url']],
+                [
+                    'title'   => $article['title'],
+                    'image'   => $article['image'], // Gambar penerbit asli / og:image
+                    'content' => $article['content'],
+                    'source'  => $article['source'],
+                ]
+            );
         }
 
         return response()->json(['status' => 'success', 'message' => 'Data ingested']);
