@@ -1,118 +1,206 @@
-import { chromium, Route, Browser } from 'playwright';
+import { Browser } from 'playwright';
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { cleanArticleTitle } from '../utils/html';
 
-export async function resolveGoogleNewsUrlAndImage(browser: any, googleNewsUrl: string): Promise<{ finalUrl: string; ogImage: string | null; content: string | null }> {
-    let page;
-    try {
-        const context = await browser.newContext({
-            userAgent: SCRAPER_CONFIG.userAgent,
-            locale: SCRAPER_CONFIG.locale
-        });
-        page = await context.newPage();
-        
-        // Block images, stylesheets and media files to speed up redirect resolution
-        await page.route('**/*', (route: Route) => {
-            const resourceType = route.request().resourceType();
-            if (['image', 'stylesheet', 'media', 'font'].includes(resourceType)) {
-                route.abort();
-            } else {
-                route.continue();
-            }
-        });
-
-        // Navigate to the Google News URL with tighter timeout
-        await page.goto(googleNewsUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: 8000
-        });
-
-        // Poll until URL redirects away from news.google.com or timeout (max 5 seconds)
-        let attempts = 0;
-        while (page.url().includes('news.google.com') && attempts < 10) {
-            await page.waitForTimeout(500);
-            attempts++;
-        }
-
-        const finalUrl = page.url();
-        
-        // Extract og:image and text content from the resolved page
-        const result = await page.evaluate(() => {
-            const getMeta = (prop: string) => document.querySelector(`meta[property="${prop}"], meta[name="${prop}"]`)?.getAttribute('content') || null;
-            const ogImage = getMeta('og:image') || getMeta('twitter:image') || getMeta('thumbnail');
-            
-            // Extract body paragraphs (p tags)
-            const paragraphs = Array.from(document.querySelectorAll('article p, main p, div[class*="content"] p, div[class*="body"] p, p'));
-            const content = paragraphs
-                .map(p => p.textContent?.trim())
-                .filter(text => text && text.length > 40)
-                .slice(0, 10)
-                .join('\n\n');
-                
-            return { ogImage, content };
-        });
-
-        await page.close();
-        return { finalUrl, ogImage: result.ogImage, content: result.content };
-    } catch (e) {
-        console.error('Error resolving Google News redirect URL:', e);
-        if (page) {
-            try { await page.close(); } catch (err) {}
-        }
-        return { finalUrl: googleNewsUrl, ogImage: null, content: null };
-    }
+interface RawNewsItem {
+  title: string;
+  googleNewsUrl: string;
+  sourceName: string;
 }
 
-export async function fetchGoogleNewsTrends(query?: string, limit: number = 5) {
-    let browser: any;
-    try {
-        const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;
-        const url = SCRAPER_CONFIG.googleNewsRssUrl(encodeURIComponent(searchQuery));
-        
-        const res = await fetch(url, {
-            headers: { 'User-Agent': SCRAPER_CONFIG.userAgent }
-        });
-        const text = await res.text();
-        const items = text.match(/<item>[\s\S]*?<\/item>/g) || [];
-        
-        if (items.length === 0) {
-            return [];
-        }
+export async function fetchGoogleNewsTrends(
+  query?: string,
+  limit: number = 10,
+  browserInstance?: Browser
+) {
+  try {
+    const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;
 
-        // Launch chromium browser instance with performance optimization args
-        browser = await chromium.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run']
-        });
-        
-        // Take top items matching the limit (capped at 100)
-        const topItems = items.slice(0, Math.min(100, limit));
-        
-        const detailPromises = topItems.map(async (item) => {
-            const titleMatch = item.match(/<title>(.*?)<\/title>/);
-            const linkMatch = item.match(/<link>(.*?)<\/link>/);
-            
-            const rawTitle = titleMatch ? titleMatch[1] : '';
-            const title = cleanArticleTitle(rawTitle);
-            
-            const googleNewsUrl = linkMatch ? linkMatch[1] : '';
-            const { finalUrl, ogImage, content } = await resolveGoogleNewsUrlAndImage(browser, googleNewsUrl);
-            
-            return {
-                title,
-                url: finalUrl,
-                image: ogImage,
-                content,
-                source: 'Google News (IT/AI)'
-            };
-        });
-        
-        const trends = await Promise.all(detailPromises);
-        await browser.close();
-        return trends.filter(t => t.title !== '');
-    } catch (e) {
-        console.error('Error fetching Google News fallback trends:', e);
-        if (browser) await browser.close();
-        return [];
+    const subQueries =
+      limit > 15
+        ? [
+            searchQuery,
+            `${searchQuery} berita`,
+            `${searchQuery} update`,
+            `${searchQuery} teknologi`,
+            `${searchQuery} 2026`,
+            `${searchQuery} tren`,
+            `${searchQuery} terbaru`,
+          ]
+        : [searchQuery];
+
+    const rawItems: RawNewsItem[] = [];
+    const seenTitles = new Set<string>();
+
+    console.log(`[Google News] 1. Mengambil RSS Feed Google News...`);
+
+    for (const q of subQueries) {
+      if (rawItems.length >= limit * 1.5) break;
+
+      try {
+        const url = SCRAPER_CONFIG.googleNewsRssUrl(encodeURIComponent(q));
+        const res = await fetch(url, { headers: { 'User-Agent': SCRAPER_CONFIG.userAgent } });
+        const text = await res.text();
+        const matches = text.match(/<item>[\s\S]*?<\/item>/g) || [];
+
+        for (const item of matches) {
+          const titleMatch = item.match(/<title>(.*?)<\/title>/);
+          const linkMatch = item.match(/<link>(.*?)<\/link>/);
+          const sourceMatch = item.match(/<source[^>]*>(.*?)<\/source>/i);
+
+          const rawTitle = titleMatch ? titleMatch[1] : '';
+          const title = cleanArticleTitle(rawTitle);
+          const googleNewsUrl = linkMatch ? linkMatch[1] : '';
+          const sourceName = sourceMatch ? sourceMatch[1].trim() : 'Google News';
+
+          if (title && googleNewsUrl && !seenTitles.has(title.toLowerCase())) {
+            seenTitles.add(title.toLowerCase());
+            rawItems.push({ title, googleNewsUrl, sourceName });
+          }
+        }
+      } catch (err) {
+        console.error(`[Google News] RSS error "${q}":`, err);
+      }
     }
+
+    if (rawItems.length === 0) return [];
+    const topItems = rawItems.slice(0, limit);
+
+    console.log(`[Google News] 2. Mengambil GAMBAR ASLI dari Portal Berita (${topItems.length} artikel)...`);
+
+    const results: Array<{ title: string; url: string; image: string; content: string; source: string }> = [];
+
+    if (browserInstance) {
+      const context = await browserInstance.newContext({
+        userAgent: SCRAPER_CONFIG.userAgent,
+        locale: 'id-ID',
+      });
+
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
+        const batch = topItems.slice(i, i + BATCH_SIZE);
+
+        const batchResults = await Promise.all(
+          batch.map(async (item, batchIdx) => {
+            const index = i + batchIdx + 1;
+            const page = await context.newPage();
+            let realUrl = item.googleNewsUrl;
+            let realOgImage: string | null = null;
+
+            try {
+              // Blokir resource berat (stylesheet, media, font, image) untuk mempercepat redirect resolution
+              await page.route('**/*', (route) => {
+                const resourceType = route.request().resourceType();
+                if (['stylesheet', 'media', 'font'].includes(resourceType)) {
+                  route.abort().catch(() => {});
+                } else {
+                  route.continue().catch(() => {});
+                }
+              });
+
+              await page.goto(item.googleNewsUrl, {
+                waitUntil: 'commit',
+                timeout: 4000,
+              }).catch(() => {});
+
+              let attempts = 0;
+              while (page.url().includes('news.google.com') && attempts < 5) {
+                await page.waitForTimeout(200);
+                attempts++;
+              }
+
+              realUrl = page.url();
+
+              // Jika masih di google news, ekstrak URL penerbit dari tag link/anchor
+              if (realUrl.includes('google.com')) {
+                const extracted = await page.evaluate(() => {
+                  const a = document.querySelector('a[href*="http"]:not([href*="google.com"])');
+                  return a?.getAttribute('href') || null;
+                }).catch(() => null);
+                if (extracted) realUrl = extracted;
+              }
+
+              // 2. Ekstrak meta image (og:image, twitter:image, thumbnail)
+              realOgImage = await page.evaluate(() => {
+                const metas = Array.from(document.querySelectorAll('meta'));
+                for (const m of metas) {
+                  const prop = (m.getAttribute('property') || m.getAttribute('name') || '').toLowerCase();
+                  const content = m.getAttribute('content') || '';
+                  if (
+                    (prop.includes('og:image') || prop.includes('twitter:image') || prop.includes('thumbnail')) &&
+                    content &&
+                    !content.includes('googleusercontent.com') &&
+                    !content.includes('gstatic.com') &&
+                    !content.includes('favicon') &&
+                    !content.includes('logo')
+                  ) {
+                    return content;
+                  }
+                }
+                const img = document.querySelector('article img, figure img, main img');
+                return img?.getAttribute('src') || img?.getAttribute('data-src') || null;
+              }).catch(() => null);
+
+              // 3. Fallback: Fast HTTP fetch jika situs belum mengembalikan og:image
+              if ((!realOgImage || !realOgImage.startsWith('http')) && realUrl && !realUrl.includes('google.com')) {
+                try {
+                  const resp = await fetch(realUrl, {
+                    headers: { 'User-Agent': SCRAPER_CONFIG.userAgent },
+                    signal: AbortSignal.timeout(3000),
+                  });
+                  const htmlText = await resp.text();
+                  const ogMatch =
+                    htmlText.match(/<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image|thumbnail)["'][^>]+content=["']([^"']+)["']/i) ||
+                    htmlText.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
+                  if (ogMatch && ogMatch[1]) {
+                    realOgImage = ogMatch[1];
+                  }
+                } catch {}
+              }
+
+              // Normalisasi absolute URL jika ogImage berbentuk relative path
+              if (realOgImage && !realOgImage.startsWith('http')) {
+                try {
+                  const base = new URL(realUrl);
+                  realOgImage = new URL(realOgImage, base.origin).toString();
+                } catch {}
+              }
+
+              if (realOgImage && realOgImage.startsWith('http')) {
+                console.log(`[Google News] [${index}/${topItems.length}] Berhasil Ambil GAMBAR ASLI (${item.sourceName})`);
+              } else {
+                console.log(`[Google News] [${index}/${topItems.length}] Situs tidak punya og:image (${item.sourceName})`);
+              }
+            } catch (err: any) {
+              console.log(`[Google News] [${index}/${topItems.length}] Skips item redirect (${item.sourceName})`);
+            } finally {
+              await page.close().catch(() => {});
+            }
+
+            const finalImage = realOgImage && realOgImage.startsWith('http') ? realOgImage : '';
+
+            return {
+              title: item.title,
+              url: realUrl,
+              image: finalImage,
+              content: `Berita terbaru mengenai "${item.title}" dari publikasi ${item.sourceName}. Klik "View Source" untuk membaca artikel selengkapnya.`,
+              source: item.sourceName ? `Google News (${item.sourceName})` : 'Google News',
+            };
+          })
+        );
+
+        results.push(...batchResults);
+      }
+
+      await context.close().catch(() => {});
+    }
+
+    const realCount = results.filter((r) => Boolean(r.image)).length;
+    console.log(`[Google News] Selesai! ${realCount}/${results.length} artikel mendapatkan GAMBAR ASLI penerbit.`);
+
+    return results;
+  } catch (e) {
+    console.error('[Google News] Error:', e);
+    return [];
+  }
 }
