@@ -10,6 +10,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "autoprefixer": "^10.5.4",
     "bullmq": "^5.80.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -18,21 +20,19 @@
     "lucide-react": "^1.25.0",
     "next": "16.2.10",
     "playwright": "^1.61.1",
+    "postcss": "^8.5.21",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "tailwind-merge": "^3.6.0"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "autoprefixer": "^10.5.4",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.10",
-    "postcss": "^8.5.21",
+    "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
     "ts-node": "^10.9.2",
     "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.10"
   }
 }
