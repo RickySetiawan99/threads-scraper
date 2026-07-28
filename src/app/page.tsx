@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Zap,
   BookOpen,
@@ -54,6 +54,12 @@ export default function Home() {
 
   // Asynchronous Queue State (API Baru)
   const [asyncCallbackUrl, setAsyncCallbackUrl] = useState<string>('http://localhost:3000/api/webhook-receiver');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setAsyncCallbackUrl(`${window.location.origin}/api/webhook-receiver`);
+    }
+  }, []);
   const [asyncLoading, setAsyncLoading] = useState<boolean>(false);
   const [asyncLatency, setAsyncLatency] = useState<number | null>(null);
   const [asyncResult, setAsyncResult] = useState<any | null>(null);
