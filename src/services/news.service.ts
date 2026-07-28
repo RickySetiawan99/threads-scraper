@@ -6,24 +6,59 @@ interface RawNewsItem {
   googleNewsUrl: string;
   realUrl: string | null; // Extracted from RSS description/source
   sourceName: string;
-  sourceBaseUrl: string | null; // Publisher domain from <source url="...">
+  sourceBaseUrl: string | null;
+}
+
+/**
+ * Decode Google News base64 article token (CBMi...) to extract the exact real publisher URL directly.
+ */
+function extractUrlFromGoogleNewsToken(googleNewsUrl: string): string | null {
+  try {
+    const match = googleNewsUrl.match(/articles\/([A-Za-z0-9\-_=]+)/) || googleNewsUrl.match(/read\/([A-Za-z0-9\-_=]+)/);
+    if (!match) return null;
+
+    const token = match[1];
+    // Normalize base64url string
+    let base64 = token.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4 !== 0) {
+      base64 += '=';
+    }
+
+    const decodedBuffer = Buffer.from(base64, 'base64');
+    const decodedStr = decodedBuffer.toString('latin1');
+
+    // Extract http(s) URL inside the protobuf string
+    const urlMatch = decodedStr.match(/(https?:\/\/[^\s\x00-\x1f\x7f-\xff"<>]+)/);
+    if (urlMatch && urlMatch[1]) {
+      let cleanUrl = urlMatch[1];
+      // Clean any trailing non-URL ASCII or protobuf control chars
+      cleanUrl = cleanUrl.replace(/[\x00-\x20\x7f-\xff]+.*$/, '');
+      cleanUrl = cleanUrl.replace(/[^a-zA-Z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/, '');
+
+      if (cleanUrl.startsWith('http') && !cleanUrl.includes('google.com')) {
+        return cleanUrl;
+      }
+    }
+  } catch (err) {}
+  return null;
 }
 
 /**
  * Resolve a Google News redirect URL to the real publisher URL.
- * Strategy:
- *   1. If we already have a realUrl from RSS parsing, use that
- *   2. Try HTTP fetch with redirect follow
- *   3. Try parsing the Google News redirect page HTML
- *   4. Fallback to the google news URL itself
  */
 async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
-  // 1. Best case: we already extracted the real URL from RSS
+  // 1. Try decoding the base64 Google News token (Fastest & most accurate!)
+  const decodedUrl = extractUrlFromGoogleNewsToken(item.googleNewsUrl);
+  if (decodedUrl) {
+    return decodedUrl;
+  }
+
+  // 2. Try URL extracted from RSS description tag
   if (item.realUrl && !item.realUrl.includes('google.com')) {
     return item.realUrl;
   }
 
-  // 2. Try HTTP redirect follow
+  // 3. Try HTTP redirect follow
   try {
     const res = await fetch(item.googleNewsUrl, {
       headers: {
@@ -32,44 +67,34 @@ async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
         'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(6000),
+      signal: AbortSignal.timeout(5000),
     });
 
-    // Check if redirect landed on a non-Google URL
     if (res.url && !res.url.includes('google.com') && !res.url.includes('consent.google')) {
       return res.url;
     }
 
-    // 3. Parse the Google redirect page HTML for embedded publisher URLs
     const html = await res.text();
-
-    // Look for data-n-au attribute (Google News article URL)
     const dataNauMatch = html.match(/data-n-au="(https?:\/\/[^"]+)"/);
     if (dataNauMatch && dataNauMatch[1]) {
       return dataNauMatch[1];
     }
 
-    // Look for any non-Google href
     const hrefMatch = html.match(/href="(https?:\/\/(?!(?:.*google\.com|.*gstatic\.com|.*googleapis\.com))[^"]+)"/);
     if (hrefMatch && hrefMatch[1]) {
       return hrefMatch[1];
     }
-
-    // Look for jsaction/jsdata containing URLs
-    const jsMatch = html.match(/(https?:\/\/(?!(?:.*google\.com|.*gstatic\.com))[a-zA-Z0-9._\-\/:%?=&#]+)/);
-    if (jsMatch && jsMatch[1] && jsMatch[1].length > 20) {
-      return jsMatch[1];
-    }
   } catch {}
 
-  // 4. Fallback: return the Google News URL
   return item.googleNewsUrl;
 }
 
 /**
- * Extract og:image from a publisher page using pure HTTP fetch (no browser needed).
+ * Extract the UNIQUE og:image from the specific article page using pure HTTP fetch.
  */
 async function fetchOgImage(url: string): Promise<string | null> {
+  if (!url || url.includes('google.com')) return null;
+
   try {
     const res = await fetch(url, {
       headers: {
@@ -81,7 +106,7 @@ async function fetchOgImage(url: string): Promise<string | null> {
     });
     const html = await res.text();
 
-    // Try multiple meta tag patterns for og:image, twitter:image
+    // Try meta patterns for og:image, twitter:image
     const patterns = [
       /<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image)["'][^>]+content=["']([^"']+)["']/i,
       /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image)["']/i,
@@ -92,17 +117,16 @@ async function fetchOgImage(url: string): Promise<string | null> {
     for (const pattern of patterns) {
       const match = html.match(pattern);
       if (match && match[1]) {
-        let imageUrl = match[1];
+        let imageUrl = match[1].replace(/&amp;/g, '&').trim();
 
-        // Decode HTML entities
-        imageUrl = imageUrl.replace(/&amp;/g, '&');
-
-        // Skip unwanted images
+        // Skip generic logos, favicons, or google placeholders
+        const lowerImg = imageUrl.toLowerCase();
         if (
-          imageUrl.includes('googleusercontent.com') ||
-          imageUrl.includes('gstatic.com') ||
-          imageUrl.includes('favicon') ||
-          imageUrl.toLowerCase().includes('logo') ||
+          lowerImg.includes('googleusercontent.com') ||
+          lowerImg.includes('gstatic.com') ||
+          lowerImg.includes('favicon') ||
+          lowerImg.includes('default-logo') ||
+          lowerImg.includes('site-logo') ||
           imageUrl.length < 10
         ) {
           continue;
@@ -130,7 +154,7 @@ async function fetchOgImage(url: string): Promise<string | null> {
 export async function fetchGoogleNewsTrends(
   query?: string,
   limit: number = 10,
-  _browserInstance?: any // kept for backward compatibility, but no longer used
+  _browserInstance?: any
 ) {
   try {
     const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;
@@ -167,8 +191,8 @@ export async function fetchGoogleNewsTrends(
           const linkMatch = item.match(/<link>(.*?)<\/link>/);
           const sourceMatch = item.match(/<source[^>]*>(.*?)<\/source>/i);
           const sourceUrlMatch = item.match(/<source[^>]+url=["']([^"']+)["']/i);
-          
-          // Extract real URL from <description> which often contains <a href="...">
+
+          // Extract real URL from <description> if present
           const descMatch = item.match(/<description>([\s\S]*?)<\/description>/i);
           let realUrlFromDesc: string | null = null;
           if (descMatch && descMatch[1]) {
@@ -203,10 +227,10 @@ export async function fetchGoogleNewsTrends(
     if (rawItems.length === 0) return [];
     const topItems = rawItems.slice(0, limit);
 
-    console.log(`[Google News] 2. Mengambil GAMBAR ASLI dari Portal Berita (${topItems.length} artikel) via HTTP...`);
+    console.log(`[Google News] 2. Mengambil GAMBAR UNIK Spesifik dari Portal Berita (${topItems.length} artikel)...`);
 
-    // Process in batches of 8 concurrent HTTP requests
-    const BATCH_SIZE = 8;
+    // Process in batches of 10 concurrent HTTP requests
+    const BATCH_SIZE = 10;
     const results: Array<{ title: string; url: string; image: string; content: string; source: string }> = [];
 
     for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
@@ -216,28 +240,19 @@ export async function fetchGoogleNewsTrends(
         batch.map(async (item, batchIdx) => {
           const index = i + batchIdx + 1;
 
-          // 1. Resolve Google News redirect to real publisher URL
+          // 1. Resolve Google News redirect to real specific article URL
           const realUrl = await resolveGoogleNewsUrl(item);
 
-          // 2. Fetch og:image from publisher page
+          // 2. Fetch specific article's og:image (NO generic homepage fallback!)
           let realOgImage: string | null = null;
-          if (realUrl && !realUrl.includes('news.google.com')) {
+          if (realUrl && !realUrl.includes('google.com')) {
             realOgImage = await fetchOgImage(realUrl);
           }
 
-          // 3. Fallback: try fetching from publisher base domain homepage
-          if (!realOgImage && item.sourceBaseUrl) {
-            try {
-              // Try fetching the homepage for a generic publisher image
-              const homepageUrl = item.sourceBaseUrl.endsWith('/') ? item.sourceBaseUrl : `${item.sourceBaseUrl}/`;
-              realOgImage = await fetchOgImage(homepageUrl);
-            } catch {}
-          }
-
           if (realOgImage) {
-            console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ASLI (${item.sourceName}) - ${realUrl.substring(0, 60)}`);
+            console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ARTIKEL UNIK (${item.sourceName}): ${realOgImage.substring(0, 70)}`);
           } else {
-            console.log(`[Google News] [${index}/${topItems.length}] ⚠️ No og:image (${item.sourceName}) - ${realUrl.substring(0, 60)}`);
+            console.log(`[Google News] [${index}/${topItems.length}] ⚠️ Artikel tidak memiliki og:image khusus (${item.sourceName})`);
           }
 
           return {
@@ -254,7 +269,7 @@ export async function fetchGoogleNewsTrends(
     }
 
     const realCount = results.filter((r) => Boolean(r.image)).length;
-    console.log(`[Google News] Selesai! ${realCount}/${results.length} artikel mendapatkan GAMBAR ASLI penerbit.`);
+    console.log(`[Google News] Selesai! ${realCount}/${results.length} artikel mendapatkan GAMBAR ARTIKEL UNIK.`);
 
     return results;
   } catch (e) {
