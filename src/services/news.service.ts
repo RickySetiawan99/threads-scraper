@@ -7,10 +7,79 @@ interface RawNewsItem {
   sourceName: string;
 }
 
+/**
+ * Resolve a Google News redirect URL to the real publisher URL using HTTP fetch (no browser needed).
+ */
+async function resolveGoogleNewsUrl(googleNewsUrl: string): Promise<string> {
+  try {
+    const res = await fetch(googleNewsUrl, {
+      headers: { 'User-Agent': SCRAPER_CONFIG.userAgent },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(5000),
+    });
+    // After following redirects, res.url should be the real publisher URL
+    if (res.url && !res.url.includes('consent.google.com')) {
+      return res.url;
+    }
+    // Fallback: parse the HTML for a redirect link
+    const html = await res.text();
+    const linkMatch = html.match(/href="(https?:\/\/(?!.*google\.com)[^"]+)"/);
+    if (linkMatch && linkMatch[1]) {
+      return linkMatch[1];
+    }
+  } catch {}
+  return googleNewsUrl;
+}
+
+/**
+ * Extract og:image from a publisher page using pure HTTP fetch (no browser needed).
+ */
+async function fetchOgImage(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': SCRAPER_CONFIG.userAgent },
+      signal: AbortSignal.timeout(4000),
+    });
+    const html = await res.text();
+
+    // Try og:image, twitter:image, thumbnail
+    const ogMatch =
+      html.match(/<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image|thumbnail)["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
+
+    if (ogMatch && ogMatch[1]) {
+      let imageUrl = ogMatch[1];
+
+      // Skip Google/favicon/logo images
+      if (
+        imageUrl.includes('googleusercontent.com') ||
+        imageUrl.includes('gstatic.com') ||
+        imageUrl.includes('favicon') ||
+        imageUrl.includes('logo')
+      ) {
+        return null;
+      }
+
+      // Normalize relative URLs to absolute
+      if (!imageUrl.startsWith('http')) {
+        try {
+          const base = new URL(url);
+          imageUrl = new URL(imageUrl, base.origin).toString();
+        } catch {}
+      }
+
+      if (imageUrl.startsWith('http')) {
+        return imageUrl;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 export async function fetchGoogleNewsTrends(
   query?: string,
   limit: number = 10,
-  browserInstance?: any
+  _browserInstance?: any // kept for backward compatibility, but no longer used
 ) {
   try {
     const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;
@@ -65,133 +134,45 @@ export async function fetchGoogleNewsTrends(
     if (rawItems.length === 0) return [];
     const topItems = rawItems.slice(0, limit);
 
-    console.log(`[Google News] 2. Mengambil GAMBAR ASLI dari Portal Berita (${topItems.length} artikel)...`);
+    console.log(`[Google News] 2. Mengambil GAMBAR ASLI dari Portal Berita (${topItems.length} artikel) via HTTP...`);
 
+    // Process in batches of 10 concurrent HTTP requests
+    const BATCH_SIZE = 10;
     const results: Array<{ title: string; url: string; image: string; content: string; source: string }> = [];
 
-    if (browserInstance) {
-      const context = await browserInstance.newContext({
-        userAgent: SCRAPER_CONFIG.userAgent,
-        locale: 'id-ID',
-      });
+    for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
+      const batch = topItems.slice(i, i + BATCH_SIZE);
 
-      const BATCH_SIZE = 10;
-      for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
-        const batch = topItems.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (item, batchIdx) => {
+          const index = i + batchIdx + 1;
 
-        const batchResults = await Promise.all(
-          batch.map(async (item, batchIdx) => {
-            const index = i + batchIdx + 1;
-            const page = await context.newPage();
-            let realUrl = item.googleNewsUrl;
-            let realOgImage: string | null = null;
+          // 1. Resolve Google News redirect to real publisher URL
+          const realUrl = await resolveGoogleNewsUrl(item.googleNewsUrl);
 
-            try {
-              // Blokir resource berat (stylesheet, media, font, image) untuk mempercepat redirect resolution
-              await page.route('**/*', (route: any) => {
-                const resourceType = route.request().resourceType();
-                if (['stylesheet', 'media', 'font'].includes(resourceType)) {
-                  route.abort().catch(() => {});
-                } else {
-                  route.continue().catch(() => {});
-                }
-              });
+          // 2. Fetch og:image from publisher page
+          let realOgImage: string | null = null;
+          if (realUrl && !realUrl.includes('google.com')) {
+            realOgImage = await fetchOgImage(realUrl);
+          }
 
-              await page.goto(item.googleNewsUrl, {
-                waitUntil: 'commit',
-                timeout: 4000,
-              }).catch(() => {});
+          if (realOgImage) {
+            console.log(`[Google News] [${index}/${topItems.length}] Berhasil Ambil GAMBAR ASLI (${item.sourceName})`);
+          } else {
+            console.log(`[Google News] [${index}/${topItems.length}] Situs tidak punya og:image (${item.sourceName})`);
+          }
 
-              let attempts = 0;
-              while (page.url().includes('news.google.com') && attempts < 5) {
-                await page.waitForTimeout(200);
-                attempts++;
-              }
+          return {
+            title: item.title,
+            url: realUrl,
+            image: realOgImage || '',
+            content: `Berita terbaru mengenai "${item.title}" dari publikasi ${item.sourceName}. Klik "View Source" untuk membaca artikel selengkapnya.`,
+            source: item.sourceName ? `Google News (${item.sourceName})` : 'Google News',
+          };
+        })
+      );
 
-              realUrl = page.url();
-
-              // Jika masih di google news, ekstrak URL penerbit dari tag link/anchor
-              if (realUrl.includes('google.com')) {
-                const extracted = await page.evaluate(() => {
-                  const a = document.querySelector('a[href*="http"]:not([href*="google.com"])');
-                  return a?.getAttribute('href') || null;
-                }).catch(() => null);
-                if (extracted) realUrl = extracted;
-              }
-
-              // 2. Ekstrak meta image (og:image, twitter:image, thumbnail)
-              realOgImage = await page.evaluate(() => {
-                const metas = Array.from(document.querySelectorAll('meta'));
-                for (const m of metas) {
-                  const prop = (m.getAttribute('property') || m.getAttribute('name') || '').toLowerCase();
-                  const content = m.getAttribute('content') || '';
-                  if (
-                    (prop.includes('og:image') || prop.includes('twitter:image') || prop.includes('thumbnail')) &&
-                    content &&
-                    !content.includes('googleusercontent.com') &&
-                    !content.includes('gstatic.com') &&
-                    !content.includes('favicon') &&
-                    !content.includes('logo')
-                  ) {
-                    return content;
-                  }
-                }
-                const img = document.querySelector('article img, figure img, main img');
-                return img?.getAttribute('src') || img?.getAttribute('data-src') || null;
-              }).catch(() => null);
-
-              // 3. Fallback: Fast HTTP fetch jika situs belum mengembalikan og:image
-              if ((!realOgImage || !realOgImage.startsWith('http')) && realUrl && !realUrl.includes('google.com')) {
-                try {
-                  const resp = await fetch(realUrl, {
-                    headers: { 'User-Agent': SCRAPER_CONFIG.userAgent },
-                    signal: AbortSignal.timeout(3000),
-                  });
-                  const htmlText = await resp.text();
-                  const ogMatch =
-                    htmlText.match(/<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image|thumbnail)["'][^>]+content=["']([^"']+)["']/i) ||
-                    htmlText.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
-                  if (ogMatch && ogMatch[1]) {
-                    realOgImage = ogMatch[1];
-                  }
-                } catch {}
-              }
-
-              // Normalisasi absolute URL jika ogImage berbentuk relative path
-              if (realOgImage && !realOgImage.startsWith('http')) {
-                try {
-                  const base = new URL(realUrl);
-                  realOgImage = new URL(realOgImage, base.origin).toString();
-                } catch {}
-              }
-
-              if (realOgImage && realOgImage.startsWith('http')) {
-                console.log(`[Google News] [${index}/${topItems.length}] Berhasil Ambil GAMBAR ASLI (${item.sourceName})`);
-              } else {
-                console.log(`[Google News] [${index}/${topItems.length}] Situs tidak punya og:image (${item.sourceName})`);
-              }
-            } catch (err: any) {
-              console.log(`[Google News] [${index}/${topItems.length}] Skips item redirect (${item.sourceName})`);
-            } finally {
-              await page.close().catch(() => {});
-            }
-
-            const finalImage = realOgImage && realOgImage.startsWith('http') ? realOgImage : '';
-
-            return {
-              title: item.title,
-              url: realUrl,
-              image: finalImage,
-              content: `Berita terbaru mengenai "${item.title}" dari publikasi ${item.sourceName}. Klik "View Source" untuk membaca artikel selengkapnya.`,
-              source: item.sourceName ? `Google News (${item.sourceName})` : 'Google News',
-            };
-          })
-        );
-
-        results.push(...batchResults);
-      }
-
-      await context.close().catch(() => {});
+      results.push(...batchResults);
     }
 
     const realCount = results.filter((r) => Boolean(r.image)).length;
