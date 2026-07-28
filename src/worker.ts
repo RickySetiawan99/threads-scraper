@@ -45,12 +45,16 @@ export const worker = new Worker<ScrapeJobPayload>(
         // Google News uses pure HTTP fetch (no Playwright needed)
         articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit);
       } else {
-        // Threads.net requires Playwright browser
+        // Threads.net requires Playwright browser; fallback gracefully to google-news if browser is unavailable
         const browser = await getBrowser();
         if (!browser) {
-          throw new Error('Threads.net scraping requires Playwright Chromium which is not available on this server. Use "google-news" source instead.');
+          console.warn(
+            `[Worker] Playwright Chromium is not available on this server container. Falling back from "${sourceChoice}" to "google-news"...`
+          );
+          articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit);
+        } else {
+          articles = await scrapeThreadsWithPool(browser, job.data.topic, targetLimit);
         }
-        articles = await scrapeThreadsWithPool(browser, job.data.topic, targetLimit);
       }
 
       const payload: WebhookPayload = {

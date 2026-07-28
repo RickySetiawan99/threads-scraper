@@ -46,7 +46,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'feed' | 'architecture' | 'docs'>('feed');
 
   // Strict Data Source Selector: 'threads' | 'google-news'
-  const [dataSource, setDataSource] = useState<'threads' | 'google-news'>('threads');
+  const [dataSource, setDataSource] = useState<'threads' | 'google-news'>('google-news');
 
   // Scrape Parameters (No Limit Caps!)
   const [scrapeTopic, setScrapeTopic] = useState<string>('Artificial Intelligence');
