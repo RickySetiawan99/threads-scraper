@@ -5,7 +5,7 @@ interface RawNewsItem {
   title: string;
   googleNewsUrl: string;
   realUrl: string | null;
-  rssImage: string | null; // Extracted directly from RSS <description> <img src="...">
+  rssImage: string | null;
   sourceName: string;
   sourceBaseUrl: string | null;
 }
@@ -35,6 +35,35 @@ function extractUrlFromGoogleNewsToken(googleNewsUrl: string): string | null {
 
       if (cleanUrl.startsWith('http') && !cleanUrl.includes('google.com')) {
         return cleanUrl;
+      }
+    }
+  } catch (err) {}
+  return null;
+}
+
+/**
+ * Extract Google News's own cached article photo from Google CDN (lh3.googleusercontent.com)
+ */
+async function fetchGoogleNewsCdnImage(googleNewsUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(googleNewsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    const html = await res.text();
+
+    const cdnMatches = html.match(/https:\/\/lh3\.googleusercontent\.com\/[a-zA-Z0-9\-_]+=[^"'\s\\]+/gi);
+    if (cdnMatches && cdnMatches.length > 0) {
+      // Exclude icon sizes (=w16, =w24, =w32, =w48)
+      const articleImg = cdnMatches.find(
+        (img) => !img.includes('=w16') && !img.includes('=w24') && !img.includes('=w32') && !img.includes('=w48')
+      );
+      if (articleImg) {
+        // Upgrade resolution to high-definition =w800
+        return articleImg.replace(/=[^"'\s\\]+$/, '=w800');
       }
     }
   } catch (err) {}
@@ -121,7 +150,6 @@ async function fetchOgImage(url: string): Promise<string | null> {
         const lowerImg = imageUrl.toLowerCase();
 
         if (
-          lowerImg.includes('googleusercontent.com') ||
           lowerImg.includes('gstatic.com') ||
           lowerImg.includes('favicon') ||
           lowerImg.includes('default-logo') ||
@@ -232,7 +260,6 @@ export async function fetchGoogleNewsTrends(
           const sourceMatch = item.match(/<source[^>]*>(.*?)<\/source>/i);
           const sourceUrlMatch = item.match(/<source[^>]+url=["']([^"']+)["']/i);
 
-          // Extract real URL and real image directly from RSS <description> tag
           const descMatch = item.match(/<description>([\s\S]*?)<\/description>/i);
           let realUrlFromDesc: string | null = null;
           let rssImageFromDesc: string | null = null;
@@ -291,14 +318,17 @@ export async function fetchGoogleNewsTrends(
           // 1. Resolve Google News redirect to real specific article URL
           const realUrl = await resolveGoogleNewsUrl(item);
 
-          // 2. Fetch specific article's og:image or HTML img tag
+          // 2. Extract Google CDN article photo directly from Google News article page
+          const googleCdnImage = await fetchGoogleNewsCdnImage(item.googleNewsUrl);
+
+          // 3. Fetch specific article's og:image or HTML img tag on publisher site
           let realOgImage: string | null = null;
-          if (realUrl && !realUrl.includes('google.com')) {
+          if (!googleCdnImage && realUrl && !realUrl.includes('google.com')) {
             realOgImage = await fetchOgImage(realUrl);
           }
 
-          // 3. Fallback to image extracted from RSS description tag (if available)
-          const finalImage = realOgImage || item.rssImage || '';
+          // Combined: Google CDN image (HD) -> Publisher og:image -> RSS description image
+          const finalImage = googleCdnImage || realOgImage || item.rssImage || '';
 
           if (finalImage) {
             console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ASLI (${item.sourceName}): ${finalImage.substring(0, 70)}`);
