@@ -53,7 +53,7 @@ export default function Home() {
   const [scrapeLimit, setScrapeLimit] = useState<number>(100);
 
   // Asynchronous Queue State (API Baru)
-  const [asyncCallbackUrl, setAsyncCallbackUrl] = useState<string>('http://localhost:3000/api/webhook-receiver');
+  const [asyncCallbackUrl, setAsyncCallbackUrl] = useState<string>('');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -111,6 +111,8 @@ export default function Home() {
     setPollTimeSeconds(0);
     setFeedStatusText(`Mengirim job ${scrapeLimit} data ke BullMQ Upstash Redis...`);
 
+    const finalCallbackUrl = asyncCallbackUrl || (typeof window !== 'undefined' ? `${window.location.origin}/api/webhook-receiver` : 'https://scraper.blueseyes.id/api/webhook-receiver');
+
     const startTime = performance.now();
 
     try {
@@ -121,7 +123,7 @@ export default function Home() {
           topic: scrapeTopic,
           source: dataSource,
           depth: scrapeLimit,
-          callbackUrl: asyncCallbackUrl,
+          callbackUrl: finalCallbackUrl,
           forceNew: true, // Generate fresh jobId for live result matching
         }),
       });
