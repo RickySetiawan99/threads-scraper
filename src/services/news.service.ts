@@ -1,4 +1,3 @@
-import { Browser } from 'playwright';
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { cleanArticleTitle } from '../utils/html';
 
@@ -11,7 +10,7 @@ interface RawNewsItem {
 export async function fetchGoogleNewsTrends(
   query?: string,
   limit: number = 10,
-  browserInstance?: Browser
+  browserInstance?: any
 ) {
   try {
     const searchQuery = query || SCRAPER_CONFIG.defaultFallbackQuery;

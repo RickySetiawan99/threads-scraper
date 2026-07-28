@@ -1,4 +1,3 @@
-import { Browser, chromium } from 'playwright';
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { ScrapedArticle } from '../types/queue';
 
