@@ -1,6 +1,9 @@
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { cleanArticleTitle } from '../utils/html';
 
+// Allow fetching news sites with expired or non-standard SSL certificates
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 interface RawNewsItem {
   title: string;
   googleNewsUrl: string;
@@ -42,7 +45,8 @@ function extractUrlFromGoogleNewsToken(googleNewsUrl: string): string | null {
 }
 
 /**
- * Extract Google News's own cached article photo from Google CDN (lh3.googleusercontent.com)
+ * Extract Google News's cached article photo from Google CDN (lh3.googleusercontent.com)
+ * Excludes generic "GE" fallback graphic (J6_coFbogxhRI9i...) and icon sizes.
  */
 async function fetchGoogleNewsCdnImage(googleNewsUrl: string): Promise<string | null> {
   try {
@@ -57,12 +61,16 @@ async function fetchGoogleNewsCdnImage(googleNewsUrl: string): Promise<string | 
 
     const cdnMatches = html.match(/https:\/\/lh3\.googleusercontent\.com\/[a-zA-Z0-9\-_]+=[^"'\s\\]+/gi);
     if (cdnMatches && cdnMatches.length > 0) {
-      // Exclude icon sizes (=w16, =w24, =w32, =w48)
+      // Exclude icon sizes and generic GE logo (J6_coFbogxhRI9i...)
       const articleImg = cdnMatches.find(
-        (img) => !img.includes('=w16') && !img.includes('=w24') && !img.includes('=w32') && !img.includes('=w48')
+        (img) =>
+          !img.includes('=w16') &&
+          !img.includes('=w24') &&
+          !img.includes('=w32') &&
+          !img.includes('=w48') &&
+          !img.includes('J6_coFbogxhRI9i')
       );
       if (articleImg) {
-        // Upgrade resolution to high-definition =w800
         return articleImg.replace(/=[^"'\s\\]+$/, '=w800');
       }
     }
@@ -117,7 +125,7 @@ async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
 }
 
 /**
- * Extract og:image or HTML inline image from a publisher page using pure HTTP fetch with full browser headers.
+ * Extract og:image or HTML inline image from a publisher page using pure HTTP fetch.
  */
 async function fetchOgImage(url: string): Promise<string | null> {
   if (!url || url.includes('google.com')) return null;
@@ -153,6 +161,7 @@ async function fetchOgImage(url: string): Promise<string | null> {
           lowerImg.includes('gstatic.com') ||
           lowerImg.includes('favicon') ||
           lowerImg.includes('default-logo') ||
+          lowerImg.includes('J6_coFbogxhRI9i') ||
           imageUrl.length < 10
         ) {
           continue;
@@ -193,6 +202,7 @@ async function fetchOgImage(url: string): Promise<string | null> {
             !lowerImg.includes('pixel') &&
             !lowerImg.includes('tracking') &&
             !lowerImg.includes('gstatic.com') &&
+            !lowerImg.includes('J6_coFbogxhRI9i') &&
             imageUrl.length > 12
           ) {
             if (!imageUrl.startsWith('http')) {
@@ -318,20 +328,20 @@ export async function fetchGoogleNewsTrends(
           // 1. Resolve Google News redirect to real specific article URL
           const realUrl = await resolveGoogleNewsUrl(item);
 
-          // 2. Extract Google CDN article photo directly from Google News article page
-          const googleCdnImage = await fetchGoogleNewsCdnImage(item.googleNewsUrl);
-
-          // 3. Fetch specific article's og:image or HTML img tag on publisher site
+          // 2. Fetch specific article's og:image or HTML img tag from publisher site
           let realOgImage: string | null = null;
-          if (!googleCdnImage && realUrl && !realUrl.includes('google.com')) {
+          if (realUrl && !realUrl.includes('google.com')) {
             realOgImage = await fetchOgImage(realUrl);
           }
 
-          // Combined: Google CDN image (HD) -> Publisher og:image -> RSS description image
-          const finalImage = googleCdnImage || realOgImage || item.rssImage || '';
+          // 3. Extract Google CDN article photo (excluding generic GE graphic J6_coFbogxhRI9i)
+          const googleCdnImage = await fetchGoogleNewsCdnImage(item.googleNewsUrl);
+
+          // Combined: Publisher og:image -> Google CDN photo -> RSS description image
+          const finalImage = realOgImage || googleCdnImage || item.rssImage || '';
 
           if (finalImage) {
-            console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ASLI (${item.sourceName}): ${finalImage.substring(0, 70)}`);
+            console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ASLI ARTIKEL (${item.sourceName}): ${finalImage.substring(0, 70)}`);
           } else {
             console.log(`[Google News] [${index}/${topItems.length}] ⚠️ No image found for (${item.sourceName})`);
           }
