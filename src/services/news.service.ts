@@ -1,9 +1,6 @@
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { cleanArticleTitle } from '../utils/html';
 
-// Allow fetching news sites with expired or non-standard SSL certificates
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 interface RawNewsItem {
   title: string;
   googleNewsUrl: string;
@@ -13,66 +10,86 @@ interface RawNewsItem {
   sourceBaseUrl: string | null;
 }
 
-/**
- * Decode Google News base64 article token (CBMi...) to extract the exact real publisher URL directly.
- */
-function extractUrlFromGoogleNewsToken(googleNewsUrl: string): string | null {
-  try {
-    const match = googleNewsUrl.match(/articles\/([A-Za-z0-9\-_=]+)/) || googleNewsUrl.match(/read\/([A-Za-z0-9\-_=]+)/);
-    if (!match) return null;
-
-    const token = match[1];
-    let base64 = token.replace(/-/g, '+').replace(/_/g, '/');
-    while (base64.length % 4 !== 0) {
-      base64 += '=';
-    }
-
-    const decodedBuffer = Buffer.from(base64, 'base64');
-    const decodedStr = decodedBuffer.toString('latin1');
-
-    const urlMatch = decodedStr.match(/(https?:\/\/[^\s\x00-\x1f\x7f-\xff"<>]+)/);
-    if (urlMatch && urlMatch[1]) {
-      let cleanUrl = urlMatch[1];
-      cleanUrl = cleanUrl.replace(/[\x00-\x20\x7f-\xff]+.*$/, '');
-      cleanUrl = cleanUrl.replace(/[^a-zA-Z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/, '');
-
-      if (cleanUrl.startsWith('http') && !cleanUrl.includes('google.com')) {
-        return cleanUrl;
-      }
-    }
-  } catch (err) {}
-  return null;
-}
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 /**
- * Extract Google News's cached article photo from Google CDN (lh3.googleusercontent.com)
- * Excludes generic "GE" fallback graphic (J6_coFbogxhRI9i...) and icon sizes.
+ * Decode Google News article URL using Google's internal batchexecute API.
+ * This is the ONLY reliable method to resolve CBMi... tokens to real publisher URLs
+ * without a headless browser.
  */
-async function fetchGoogleNewsCdnImage(googleNewsUrl: string): Promise<string | null> {
+async function decodeGoogleNewsUrl(googleNewsUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(googleNewsUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
+    // Step 1: Fetch the Google News article page to extract article metadata
+    const pageRes = await fetch(googleNewsUrl, {
+      headers: { 'User-Agent': BROWSER_UA },
       signal: AbortSignal.timeout(5000),
     });
-    const html = await res.text();
+    const html = await pageRes.text();
 
-    const cdnMatches = html.match(/https:\/\/lh3\.googleusercontent\.com\/[a-zA-Z0-9\-_]+=[^"'\s\\]+/gi);
-    if (cdnMatches && cdnMatches.length > 0) {
-      // Exclude icon sizes and generic GE logo (J6_coFbogxhRI9i...)
-      const articleImg = cdnMatches.find(
-        (img) =>
-          !img.includes('=w16') &&
-          !img.includes('=w24') &&
-          !img.includes('=w32') &&
-          !img.includes('=w48') &&
-          !img.includes('J6_coFbogxhRI9i')
+    const articleIdMatch = html.match(/data-n-a-id="([^"]+)"/);
+    const timestampMatch = html.match(/data-n-a-ts="([^"]+)"/);
+    const signatureMatch = html.match(/data-n-a-sg="([^"]+)"/);
+
+    if (!articleIdMatch || !timestampMatch || !signatureMatch) {
+      return null;
+    }
+
+    const articleId = articleIdMatch[1];
+    const timestamp = timestampMatch[1];
+    const signature = signatureMatch[1];
+
+    // Step 2: Call Google's internal batchexecute API to resolve the real URL
+    const innerPayload = JSON.stringify([
+      "garturlreq",
+      [
+        ["en", "ID", ["FINANCE_TOP_INDICES", "WEB_TEST_1_0_0"], null, null, 1, 1, "ID:en", null, null, null, null, null, null, null, 0, 5],
+        "en",
+        "ID",
+        true,
+        [2, 4, 8],
+        1,
+        true,
+        timestamp,
+        false,
+        false,
+        null,
+        false
+      ],
+      articleId,
+      timestamp,
+      signature
+    ]);
+
+    const outerPayload = JSON.stringify([[["Fbv4je", innerPayload, null, "generic"]]]);
+
+    const body = new URLSearchParams();
+    body.append('f.req', outerPayload);
+
+    const batchRes = await fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'User-Agent': BROWSER_UA,
+        'Referer': 'https://news.google.com/',
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    const batchText = await batchRes.text();
+
+    // Extract non-Google URL from response
+    const urlMatch = batchText.match(
+      /https?:\/\/(?!news\.google\.com|www\.google\.com|consent\.google|gstatic\.com|googleapis\.com|angular\.dev|www\.w3\.org)[^\s"\\,\]\)]+/
+    );
+
+    if (urlMatch) {
+      let realUrl = urlMatch[0];
+      // Decode unicode escapes
+      realUrl = realUrl.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) =>
+        String.fromCharCode(parseInt(hex, 16))
       );
-      if (articleImg) {
-        return articleImg.replace(/=[^"'\s\\]+$/, '=w800');
-      }
+      return realUrl;
     }
   } catch (err) {}
   return null;
@@ -82,8 +99,8 @@ async function fetchGoogleNewsCdnImage(googleNewsUrl: string): Promise<string | 
  * Resolve a Google News redirect URL to the real publisher URL.
  */
 async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
-  // 1. Try decoding the base64 Google News token
-  const decodedUrl = extractUrlFromGoogleNewsToken(item.googleNewsUrl);
+  // 1. Best: Use batchexecute API decoder (works 100% without browser)
+  const decodedUrl = await decodeGoogleNewsUrl(item.googleNewsUrl);
   if (decodedUrl) {
     return decodedUrl;
   }
@@ -93,13 +110,12 @@ async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
     return item.realUrl;
   }
 
-  // 3. Try HTTP redirect follow with full browser headers
+  // 3. Try HTTP redirect follow
   try {
     const res = await fetch(item.googleNewsUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': BROWSER_UA,
+        'Accept': 'text/html,application/xhtml+xml',
       },
       redirect: 'follow',
       signal: AbortSignal.timeout(6000),
@@ -107,17 +123,6 @@ async function resolveGoogleNewsUrl(item: RawNewsItem): Promise<string> {
 
     if (res.url && !res.url.includes('google.com') && !res.url.includes('consent.google')) {
       return res.url;
-    }
-
-    const html = await res.text();
-    const dataNauMatch = html.match(/data-n-au="(https?:\/\/[^"]+)"/);
-    if (dataNauMatch && dataNauMatch[1]) {
-      return dataNauMatch[1];
-    }
-
-    const hrefMatch = html.match(/href="(https?:\/\/(?!(?:.*google\.com|.*gstatic\.com|.*googleapis\.com))[^"]+)"/);
-    if (hrefMatch && hrefMatch[1]) {
-      return hrefMatch[1];
     }
   } catch {}
 
@@ -133,10 +138,9 @@ async function fetchOgImage(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'User-Agent': BROWSER_UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Cache-Control': 'no-cache',
       },
       redirect: 'follow',
       signal: AbortSignal.timeout(6000),
@@ -145,10 +149,10 @@ async function fetchOgImage(url: string): Promise<string | null> {
 
     // 1. Try meta tags (og:image, twitter:image, thumbnail)
     const patterns = [
-      /<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image|image)["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image|image)["']/i,
-      /<meta[^>]+(?:property|name)=["'](?:thumbnail)["'][^>]+content=["']([^"']+)["']/i,
-      /<link[^>]+rel=["'](?:image_src|icon|apple-touch-icon)["'][^>]+href=["']([^"']+)["']/i,
+      /<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image)["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image:src|twitter:image)["']/i,
+      /<meta[^>]+(?:property|name)=["'](?:thumbnail|image)["'][^>]+content=["']([^"']+)["']/i,
+      /<link[^>]+rel=["']image_src["'][^>]+href=["']([^"']+)["']/i,
     ];
 
     for (const pattern of patterns) {
@@ -161,7 +165,6 @@ async function fetchOgImage(url: string): Promise<string | null> {
           lowerImg.includes('gstatic.com') ||
           lowerImg.includes('favicon') ||
           lowerImg.includes('default-logo') ||
-          lowerImg.includes('J6_coFbogxhRI9i') ||
           imageUrl.length < 10
         ) {
           continue;
@@ -183,9 +186,9 @@ async function fetchOgImage(url: string): Promise<string | null> {
     }
 
     // 2. Fallback: Parse <img> tags inside HTML content
-    const imgMatches =
-      html.match(/<img[^>]+(?:src|data-src|data-original)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/gi) ||
-      html.match(/<img[^>]+(?:src|data-src)=["']([^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/gi);
+    const imgMatches = html.match(
+      /<img[^>]+(?:src|data-src|data-original)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/gi
+    );
 
     if (imgMatches) {
       for (const imgTag of imgMatches) {
@@ -198,11 +201,9 @@ async function fetchOgImage(url: string): Promise<string | null> {
             !lowerImg.includes('logo') &&
             !lowerImg.includes('icon') &&
             !lowerImg.includes('avatar') &&
-            !lowerImg.includes('banner') &&
             !lowerImg.includes('pixel') &&
             !lowerImg.includes('tracking') &&
             !lowerImg.includes('gstatic.com') &&
-            !lowerImg.includes('J6_coFbogxhRI9i') &&
             imageUrl.length > 12
           ) {
             if (!imageUrl.startsWith('http')) {
@@ -256,10 +257,7 @@ export async function fetchGoogleNewsTrends(
       try {
         const url = SCRAPER_CONFIG.googleNewsRssUrl(encodeURIComponent(q));
         const res = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
+          headers: { 'User-Agent': BROWSER_UA },
         });
         const text = await res.text();
         const matches = text.match(/<item>[\s\S]*?<\/item>/g) || [];
@@ -276,7 +274,9 @@ export async function fetchGoogleNewsTrends(
 
           if (descMatch && descMatch[1]) {
             const descContent = descMatch[1];
-            const descHrefMatch = descContent.match(/href=["'](https?:\/\/(?!.*google\.com)[^"']+)["']/);
+            const descHrefMatch = descContent.match(
+              /href=["'](https?:\/\/(?!.*google\.com)[^"']+)["']/
+            );
             if (descHrefMatch && descHrefMatch[1]) {
               realUrlFromDesc = descHrefMatch[1].replace(/&amp;/g, '&');
             }
@@ -313,10 +313,19 @@ export async function fetchGoogleNewsTrends(
     if (rawItems.length === 0) return [];
     const topItems = rawItems.slice(0, limit);
 
-    console.log(`[Google News] 2. Mengambil GAMBAR ASLI dari Portal Berita (${topItems.length} artikel)...`);
+    console.log(
+      `[Google News] 2. Resolving ${topItems.length} artikel via batchexecute API + mengambil gambar asli...`
+    );
 
-    const BATCH_SIZE = 10;
-    const results: Array<{ title: string; url: string; image: string; content: string; source: string }> = [];
+    // Process in batches of 5 to avoid rate-limiting on batchexecute API
+    const BATCH_SIZE = 5;
+    const results: Array<{
+      title: string;
+      url: string;
+      image: string;
+      content: string;
+      source: string;
+    }> = [];
 
     for (let i = 0; i < topItems.length; i += BATCH_SIZE) {
       const batch = topItems.slice(i, i + BATCH_SIZE);
@@ -325,25 +334,25 @@ export async function fetchGoogleNewsTrends(
         batch.map(async (item, batchIdx) => {
           const index = i + batchIdx + 1;
 
-          // 1. Resolve Google News redirect to real specific article URL
+          // 1. Resolve Google News URL to real publisher article URL via batchexecute
           const realUrl = await resolveGoogleNewsUrl(item);
 
-          // 2. Fetch specific article's og:image or HTML img tag from publisher site
+          // 2. Fetch og:image from real publisher page
           let realOgImage: string | null = null;
           if (realUrl && !realUrl.includes('google.com')) {
             realOgImage = await fetchOgImage(realUrl);
           }
 
-          // 3. Extract Google CDN article photo (excluding generic GE graphic J6_coFbogxhRI9i)
-          const googleCdnImage = await fetchGoogleNewsCdnImage(item.googleNewsUrl);
+          const finalImage = realOgImage || item.rssImage || '';
 
-          // Combined: Publisher og:image -> Google CDN photo -> RSS description image
-          const finalImage = realOgImage || googleCdnImage || item.rssImage || '';
-
-          if (finalImage) {
-            console.log(`[Google News] [${index}/${topItems.length}] ✅ GAMBAR ASLI ARTIKEL (${item.sourceName}): ${finalImage.substring(0, 70)}`);
+          if (realOgImage) {
+            console.log(
+              `[Google News] [${index}/${topItems.length}] ✅ (${item.sourceName}): ${realOgImage.substring(0, 80)}`
+            );
           } else {
-            console.log(`[Google News] [${index}/${topItems.length}] ⚠️ No image found for (${item.sourceName})`);
+            console.log(
+              `[Google News] [${index}/${topItems.length}] ⚠️ No image (${item.sourceName}) - URL: ${realUrl.substring(0, 60)}`
+            );
           }
 
           return {
@@ -351,16 +360,25 @@ export async function fetchGoogleNewsTrends(
             url: realUrl,
             image: finalImage,
             content: `Berita terbaru mengenai "${item.title}" dari publikasi ${item.sourceName}. Klik "View Source" untuk membaca artikel selengkapnya.`,
-            source: item.sourceName ? `Google News (${item.sourceName})` : 'Google News',
+            source: item.sourceName
+              ? `Google News (${item.sourceName})`
+              : 'Google News',
           };
         })
       );
 
       results.push(...batchResults);
+
+      // Small delay between batches to avoid rate-limiting
+      if (i + BATCH_SIZE < topItems.length) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
     }
 
     const realCount = results.filter((r) => Boolean(r.image)).length;
-    console.log(`[Google News] Selesai! ${realCount}/${results.length} artikel mendapatkan GAMBAR ASLI.`);
+    console.log(
+      `[Google News] Selesai! ${realCount}/${results.length} artikel mendapatkan GAMBAR ASLI penerbit.`
+    );
 
     return results;
   } catch (e) {
