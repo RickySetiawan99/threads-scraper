@@ -1,10 +1,12 @@
 import { ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
 
+const DEFAULT_REDIS_URL = process.env.REDIS_URL || "rediss://default:gQAAAAAAAtBOAAIgcDJkZDJkYjlmZWU4ZWY0ZjlhOWQxZGJkNjU0YTQ4NTNjZg@enhanced-dragon-184398.upstash.io:6379";
+
 function getRedisConnection(): ConnectionOptions {
-  if (process.env.REDIS_URL) {
+  if (DEFAULT_REDIS_URL) {
     try {
-      const url = new URL(process.env.REDIS_URL);
+      const url = new URL(DEFAULT_REDIS_URL);
       return {
         host: url.hostname,
         port: parseInt(url.port || '6379', 10),
@@ -27,8 +29,8 @@ function getRedisConnection(): ConnectionOptions {
 let rawRedisClient: Redis | null = null;
 export function getRawRedisClient(): Redis {
   if (!rawRedisClient) {
-    if (process.env.REDIS_URL) {
-      rawRedisClient = new Redis(process.env.REDIS_URL, { tls: { rejectUnauthorized: false } });
+    if (DEFAULT_REDIS_URL) {
+      rawRedisClient = new Redis(DEFAULT_REDIS_URL, { tls: { rejectUnauthorized: false } });
     } else {
       rawRedisClient = new Redis({
         host: process.env.REDIS_HOST || '127.0.0.1',
@@ -41,4 +43,4 @@ export function getRawRedisClient(): Redis {
 }
 
 export const redisConnection: ConnectionOptions = getRedisConnection();
-export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'default-secret-key';
+export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'secret-key-super-aman';
