@@ -3,22 +3,27 @@ dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 import { Worker, Job } from 'bullmq';
-import { chromium, Browser } from 'playwright';
 import { redisConnection, WEBHOOK_SECRET } from './config/redis';
 import { ScrapeJobPayload, WebhookPayload, ScrapedArticle } from './types/queue';
 import { scrapeThreadsWithPool } from './services/threads.service';
 import { fetchGoogleNewsTrends } from './services/news.service';
 import { sendWebhookPayload } from './utils/webhook';
 
-let browserInstance: Browser | null = null;
+let browserInstance: any = null;
 
-async function getBrowser(): Promise<Browser> {
+async function getBrowser(): Promise<any> {
   if (!browserInstance || !browserInstance.isConnected()) {
-    console.log('[Worker] Launching single Chromium browser instance for context pooling...');
-    browserInstance = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run'],
-    });
+    try {
+      console.log('[Worker] Launching single Chromium browser instance for context pooling...');
+      const { chromium } = await import('playwright');
+      browserInstance = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run'],
+      });
+    } catch (err: any) {
+      console.warn('[Worker] Playwright browser is not available in this environment:', err?.message || err);
+      return null;
+    }
   }
   return browserInstance;
 }
@@ -33,15 +38,19 @@ export const worker = new Worker<ScrapeJobPayload>(
       `[Worker] Processing Job ID: ${job.data.jobId} - Topic: "${job.data.topic}" - Source: [${sourceChoice}] - Target: ${targetLimit} items`
     );
 
-    const browser = await getBrowser();
     let articles: ScrapedArticle[] = [];
 
     try {
       if (sourceChoice === 'google-news') {
         // Strictly fetch ONLY from Google News RSS
+        const browser = await getBrowser();
         articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit, browser);
       } else {
         // Strictly fetch ONLY from Threads.net via Playwright
+        const browser = await getBrowser();
+        if (!browser) {
+          throw new Error('Playwright Chromium is not available in this server container environment.');
+        }
         articles = await scrapeThreadsWithPool(browser, job.data.topic, targetLimit);
       }
 
