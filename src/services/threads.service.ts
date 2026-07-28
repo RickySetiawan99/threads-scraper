@@ -1,3 +1,4 @@
+import type { Browser } from 'playwright';
 import { SCRAPER_CONFIG } from '../config/scraper';
 import { ScrapedArticle } from '../types/queue';
 
@@ -24,52 +25,46 @@ async function scrapeSingleThreadsPage(
       await page.waitForTimeout(400);
     }
 
-    const systemWords = SCRAPER_CONFIG.systemWords;
+    // Parse Threads cards
+    const rawItems = await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
 
-    const items = await page.evaluate(
-      ({ words }: { words: string[] }) => {
-        const results: { title: string; url: string; image: string | null; content: string | null; source: string }[] = [];
-        
-        const elements = Array.from(
-          document.querySelectorAll('div[data-pressable-container="true"], a[href*="/post/"], a[href*="/@"], span[dir="auto"], div[dir="auto"]')
-        );
+      return cards
+        .map((card: any) => {
+          const textEl = card.querySelector('div[dir="auto"]');
+          const titleText = textEl ? textEl.textContent?.trim() : '';
 
-        elements.forEach((el) => {
-          const text = el.textContent?.trim();
-          if (text && text.length > 8 && text.length < 350) {
-            const cleanText = text.replace(/^[#0-9\s]+/, '').trim();
-            const lowerText = cleanText.toLowerCase();
+          const linkEl = card.querySelector('a[href*="/post/"]') as HTMLAnchorElement | null;
+          const postUrl = linkEl ? linkEl.href : '';
 
-            if (
-              cleanText &&
-              !words.some((word) => lowerText === word || lowerText.startsWith(word)) &&
-              !results.some((r) => r.title.toLowerCase() === lowerText)
-            ) {
-              const href = (el as HTMLAnchorElement).href || el.closest('a')?.href;
-              const postUrl = href && href.includes('threads.net') ? href : 'https://www.threads.net/search?q=' + encodeURIComponent(cleanText);
+          const imgEl = card.querySelector('img[src*="cdninstagram.com"]') as HTMLImageElement | null;
+          const imageUrl = imgEl ? imgEl.src : null;
 
-              results.push({
-                title: cleanText.slice(0, 150),
-                url: postUrl,
-                image: null,
-                content: cleanText.length > 90 ? cleanText : null,
-                source: 'Threads',
-              });
-            }
-          }
-        });
-
-        return results;
-      },
-      { words: systemWords }
-    );
+          return {
+            title: titleText || '',
+            url: postUrl || '',
+            image: imageUrl || null,
+            source: 'Threads',
+          };
+        })
+        .filter((item: any) => item.title.length > 5 && item.url.length > 0);
+    });
 
     const merged = [...existingResults];
-    for (const item of items) {
-      if (!merged.some((m) => m.title.toLowerCase() === item.title.toLowerCase())) {
-        merged.push(item);
-      }
+    for (const item of rawItems) {
       if (merged.length >= targetLimit) break;
+      const isDuplicate = merged.some(
+        (existing) => existing.url === item.url || existing.title.toLowerCase() === item.title.toLowerCase()
+      );
+      if (!isDuplicate) {
+        merged.push({
+          title: item.title,
+          url: item.url,
+          image: item.image,
+          content: item.title,
+          source: 'Threads',
+        });
+      }
     }
 
     return merged;
@@ -80,7 +75,7 @@ async function scrapeSingleThreadsPage(
 }
 
 export async function scrapeThreadsWithPool(
-  browser: Browser,
+  browser: any,
   query?: string,
   limit: number = 10
 ): Promise<ScrapedArticle[]> {
@@ -94,7 +89,7 @@ export async function scrapeThreadsWithPool(
 
   try {
     // Keep CSS for IntersectionObserver layout, block images/media
-    await page.route('**/*.{png,jpg,jpeg,svg,gif,webp,woff,woff2,ttf,mp4,analytics*}', (route) =>
+    await page.route('**/*.{png,jpg,jpeg,svg,gif,webp,woff,woff2,ttf,mp4,analytics*}', (route: any) =>
       route.abort()
     );
 
@@ -129,8 +124,9 @@ export async function scrapeThreadsWithPool(
 }
 
 export async function scrapeThreadsTrends(limit: number = 10): Promise<ScrapedArticle[]> {
-  let browser: Browser | undefined;
+  let browser: any;
   try {
+    const { chromium } = await import('playwright');
     browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run'],

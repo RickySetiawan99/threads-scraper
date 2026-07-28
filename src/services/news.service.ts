@@ -88,7 +88,7 @@ export async function fetchGoogleNewsTrends(
 
             try {
               // Blokir resource berat (stylesheet, media, font, image) untuk mempercepat redirect resolution
-              await page.route('**/*', (route) => {
+              await page.route('**/*', (route: any) => {
                 const resourceType = route.request().resourceType();
                 if (['stylesheet', 'media', 'font'].includes(resourceType)) {
                   route.abort().catch(() => {});
