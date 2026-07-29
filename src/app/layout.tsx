@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Threads & News Scraper Engine",
+  title: "Google News Scraper Engine",
   description: "Asynchronous BullMQ Queue & Webhook Scraper Cluster",
 };
 

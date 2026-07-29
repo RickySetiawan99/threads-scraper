@@ -5,34 +5,14 @@ dotenv.config();
 import { Worker, Job } from 'bullmq';
 import { redisConnection, WEBHOOK_SECRET } from './config/redis';
 import { ScrapeJobPayload, WebhookPayload, ScrapedArticle } from './types/queue';
-import { scrapeThreadsWithPool } from './services/threads.service';
 import { fetchGoogleNewsTrends } from './services/news.service';
 import { sendWebhookPayload } from './utils/webhook';
-
-let browserInstance: any = null;
-
-async function getBrowser(): Promise<any> {
-  if (!browserInstance || !browserInstance.isConnected()) {
-    try {
-      console.log('[Worker] Launching single Chromium browser instance for context pooling...');
-      const { chromium } = await import('playwright');
-      browserInstance = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-first-run'],
-      });
-    } catch (err: any) {
-      console.warn('[Worker] Playwright browser is not available in this environment:', err?.message || err);
-      return null;
-    }
-  }
-  return browserInstance;
-}
 
 export const worker = new Worker<ScrapeJobPayload>(
   'threads-scraper-queue',
   async (job: Job<ScrapeJobPayload>) => {
     const targetLimit = job.data.depth || 10;
-    const sourceChoice = job.data.source || 'threads';
+    const sourceChoice = 'google-news';
 
     console.log(
       `[Worker] Processing Job ID: ${job.data.jobId} - Topic: "${job.data.topic}" - Source: [${sourceChoice}] - Target: ${targetLimit} items`
@@ -41,21 +21,7 @@ export const worker = new Worker<ScrapeJobPayload>(
     let articles: ScrapedArticle[] = [];
 
     try {
-      if (sourceChoice === 'google-news') {
-        // Google News uses pure HTTP fetch (no Playwright needed)
-        articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit);
-      } else {
-        // Threads.net requires Playwright browser; fallback gracefully to google-news if browser is unavailable
-        const browser = await getBrowser();
-        if (!browser) {
-          console.warn(
-            `[Worker] Playwright Chromium is not available on this server container. Falling back from "${sourceChoice}" to "google-news"...`
-          );
-          articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit);
-        } else {
-          articles = await scrapeThreadsWithPool(browser, job.data.topic, targetLimit);
-        }
-      }
+      articles = await fetchGoogleNewsTrends(job.data.topic, targetLimit);
 
       const payload: WebhookPayload = {
         jobId: job.data.jobId,
@@ -93,8 +59,8 @@ export const worker = new Worker<ScrapeJobPayload>(
   {
     connection: redisConnection,
     concurrency: 5,
-    lockDuration: 300000, // 5 minutes lock for image resolution via Playwright
-    stalledInterval: 300000,
+    lockDuration: 60000,
+    stalledInterval: 60000,
   }
 );
 
@@ -107,7 +73,6 @@ worker.on('failed', (job, err) => {
 });
 
 worker.on('error', (err) => {
-  // Gracefully handle lock renewal / redis flush error logs
   if (err.message.includes('could not renew lock')) {
     console.log('[Worker] Job lock expired or queue was flushed.');
   } else {
@@ -116,8 +81,8 @@ worker.on('error', (err) => {
 });
 
 process.on('SIGINT', async () => {
-  console.log('[Worker] Shutting down worker and browser...');
-  if (browserInstance) await browserInstance.close();
+  console.log('[Worker] Shutting down worker...');
   await worker.close();
   process.exit(0);
 });
+

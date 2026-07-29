@@ -1,13 +1,12 @@
-# Threads & Google News Scraper API
+# Google News Scraper API
 
-A high-performance, modular Next.js API scraper designed to fetch trending topics and news articles from Threads.net and Google News. It uses Playwright (Headless Chromium) for robust web automation and scraping, with built-in fallbacks and metadata extraction.
+A high-performance, modular Next.js API scraper designed to fetch trending topics and news articles from Google News RSS & Decoded URLs.
 
 ## Features
 
-- **Threads.net Trending Scraper**: Automates search page scraping on Threads.net using Playwright to find current trending topics.
-- **Smart Google News Fallback**: Falls back to customizable Google News RSS queries if Threads.net is blocked, offline, or returns empty trends.
-- **Deep Metadata Resolution**: Uses headless browser sessions to follow Google News redirect links, resolve original publisher URLs, and extract article featured images (`og:image`).
-- **Clean & Modular Architecture**: Adheres to functional programming principles. Code is decoupled into dedicated services (`src/services`), configuration definitions (`src/config`), and helper utilities (`src/utils`).
+- **Google News RSS & Decoded URLs**: Fetches Google News RSS feeds and decodes `CBMi...` redirect links using Google's internal batchexecute API.
+- **Deep Metadata Resolution**: Resolves original publisher URLs and extracts article featured images (`og:image`).
+- **Clean & Modular Architecture**: Code is decoupled into dedicated services (`src/services`), configuration definitions (`src/config`), and helper utilities (`src/utils`).
 - **Highly Configurable**: Fully managed via environment variables (`.env`).
 - **Fully Type-Safe**: Developed completely in TypeScript with strict compile-time checks.
 
@@ -24,8 +23,7 @@ A high-performance, modular Next.js API scraper designed to fetch trending topic
 │   ├── config/
 │   │   └── scraper.ts           # Centralized Config & .env Fallbacks
 │   ├── services/
-│   │   ├── news.service.ts      # Google News Fetcher & Redirect Resolver
-│   │   └── threads.service.ts   # Playwright-based Threads Scraper
+│   │   └── news.service.ts      # Google News Fetcher & Redirect Resolver
 │   └── utils/
 │       └── html.ts              # DOM & Text Formatting Helpers
 ├── .env.example

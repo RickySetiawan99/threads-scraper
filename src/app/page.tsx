@@ -45,8 +45,8 @@ interface WebhookEvent {
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'feed' | 'architecture' | 'docs'>('feed');
 
-  // Strict Data Source Selector: 'threads' | 'google-news'
-  const [dataSource, setDataSource] = useState<'threads' | 'google-news'>('google-news');
+  // Strict Data Source: 'google-news'
+  const dataSource = 'google-news';
 
   // Scrape Parameters (No Limit Caps!)
   const [scrapeTopic, setScrapeTopic] = useState<string>('Artificial Intelligence');
@@ -135,7 +135,7 @@ export default function Home() {
       if (res.ok) {
         setAsyncResult(json);
         const targetJobId = json.jobId;
-        setFeedStatusText(`Worker Daemon sedang men-scrape ${scrapeLimit} data dari ${dataSource === 'threads' ? 'Threads.net' : 'Google News'}...`);
+        setFeedStatusText(`Worker Daemon sedang men-scrape ${scrapeLimit} data dari Google News...`);
 
         // Seconds Timer
         let seconds = 0;
@@ -213,7 +213,7 @@ class DispatchScraperJob extends Command
     public function handle()
     {
         $topic = $this->argument('topic');
-        $source = $this->option('source'); // 'threads' atau 'google-news'
+        $source = $this->option('source') ?: 'google-news';
         $limit = (int) $this->option('limit');
         
         $response = Http::post('http://localhost:3000/api/scrape', [
@@ -372,32 +372,18 @@ console.log('Enqueued Job ID:', result.jobId);`,
             {/* Control Panel */}
             <Card className="bg-zinc-900/80 border-zinc-800">
               <CardContent className="p-6 space-y-6">
-                {/* Row 1: Source Selector (Threads vs Google News) */}
+                {/* Row 1: Source Indicator (Google News) */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-zinc-800">
                   <div className="space-y-1">
                     <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                      Pilih Sumber Data Scraping:
+                      Sumber Data Scraping:
                     </span>
                     <div className="flex items-center gap-2 pt-1">
-                      <Button
-                        variant={dataSource === 'threads' ? 'secondary' : 'outline'}
-                        size="sm"
-                        onClick={() => setDataSource('threads')}
-                        className={`text-xs h-8 px-4 font-semibold gap-2 ${dataSource === 'threads' ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm' : 'text-zinc-400 border-zinc-800'}`}
-                      >
-                        Threads.net Only
-                      </Button>
-                      <Button
-                        variant={dataSource === 'google-news' ? 'secondary' : 'outline'}
-                        size="sm"
-                        onClick={() => setDataSource('google-news')}
-                        className={`text-xs h-8 px-4 font-semibold gap-2 ${dataSource === 'google-news' ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50 shadow-sm' : 'text-zinc-400 border-zinc-800'}`}
-                      >
-                        Google News Only
-                      </Button>
+                      <Badge variant="indigo" className="text-xs px-3 py-1 font-semibold gap-1.5 bg-indigo-500/20 text-indigo-300 border-indigo-500/50">
+                        Google News RSS & Decoded URLs
+                      </Badge>
                     </div>
                   </div>
-
                   <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono">
                     <Server className="h-4 w-4 text-emerald-400" />
                     <span>Upstash Cloud Redis Active</span>
@@ -450,7 +436,7 @@ console.log('Enqueued Job ID:', result.jobId);`,
                           </>
                         ) : (
                           <>
-                            <Zap className="h-4 w-4" /> Scrape {dataSource === 'threads' ? 'Threads.net' : 'Google News'} ({scrapeLimit} Data)
+                            <Zap className="h-4 w-4" /> Scrape Google News ({scrapeLimit} Data)
                           </>
                         )}
                       </Button>
@@ -487,7 +473,7 @@ console.log('Enqueued Job ID:', result.jobId);`,
                   </div>
 
                   <span className="text-xs text-zinc-400 font-mono">
-                    Total Displayed: <strong className="text-white">{filteredData.length}</strong> items (Source: <strong className={dataSource === 'threads' ? 'text-amber-400' : 'text-indigo-400'}>{dataSource === 'threads' ? 'Threads.net Only' : 'Google News Only'}</strong>)
+                    Total Displayed: <strong className="text-white">{filteredData.length}</strong> items (Source: <strong className="text-indigo-400">Google News Only</strong>)
                   </span>
                 </div>
               </CardContent>
@@ -507,7 +493,7 @@ console.log('Enqueued Job ID:', result.jobId);`,
                     <Loader2 className="h-10 w-10 text-emerald-400 animate-spin" />
                     <div className="space-y-1">
                       <p className="text-sm font-semibold text-emerald-300">
-                        {feedStatusText || `Sedang memproses ${scrapeLimit} data dari ${dataSource === 'threads' ? 'Threads.net' : 'Google News'}...`}
+                        {feedStatusText || `Sedang memproses ${scrapeLimit} data dari Google News...`}
                       </p>
                       <p className="text-xs text-zinc-400 font-mono">
                         Waktu berjalan: <span className="text-emerald-400 font-bold">{pollTimeSeconds} detik</span>. Layar akan otomatis ter-update begitu data Webhook diterima.
@@ -527,22 +513,24 @@ console.log('Enqueued Job ID:', result.jobId);`,
                 <CardContent className="p-8 text-center space-y-3">
                   <Database className="h-10 w-10 text-zinc-600 mx-auto" />
                   <p className="text-zinc-400 text-sm">
-                    Belum ada data postingan. Klik <strong>"Scrape {dataSource === 'threads' ? 'Threads.net' : 'Google News'}"</strong> untuk mengambil data.
+                    Belum ada data postingan. Klik <strong>"Scrape Google News"</strong> untuk mengambil data.
                   </p>
                   <Button
-                    variant="emerald"
-                    size="sm"
-                    onClick={(e) => handleTestAsync(e)}
+                    onClick={() => {
+                      setActiveTab('feed');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
                   >
-                    Scrape {dataSource === 'threads' ? 'Threads.net' : 'Google News'} ({scrapeLimit} Data)
+                    Scrape Google News ({scrapeLimit} Data)
                   </Button>
                 </CardContent>
               </Card>
             ) : (
               /* Display ALL items */
               <div className="space-y-4">
-                <div className="flex items-center justify-between text-xs text-zinc-400 px-1">
-                  <span>Menampilkan <strong>{filteredData.length}</strong> postingan dari <strong>{dataSource === 'threads' ? 'Threads.net' : 'Google News'}</strong>:</span>
+                <div className="flex items-center justify-between text-xs text-zinc-400 pb-2 border-b border-zinc-800">
+                  <span>Menampilkan <strong>{filteredData.length}</strong> berita dari <strong>Google News</strong>:</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {filteredData.map((item, idx) => (

@@ -1,7 +1,7 @@
 export interface ScrapeJobPayload {
   jobId: string;
   topic: string;
-  source?: 'threads' | 'google-news';
+  source?: 'google-news';
   depth?: number;
   callbackUrl: string;
 }

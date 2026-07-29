@@ -19,7 +19,7 @@ function getScraperQueue(): Queue<ScrapeJobPayload> {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { topic, callbackUrl, source = 'threads', depth = 10, forceNew = false } = body;
+    const { topic, callbackUrl, source = 'google-news', depth = 10, forceNew = false } = body;
 
     if (!topic || !callbackUrl) {
       return NextResponse.json(
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const cleanSource = source === 'google-news' ? 'google-news' : 'threads';
+    const cleanSource = 'google-news';
     const topicSlug = topic.toLowerCase().replace(/[^a-z0-9]/g, '-');
     
     // Create deterministic jobId to prevent duplicate queue stacking
