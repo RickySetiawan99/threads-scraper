@@ -12,6 +12,22 @@ interface RawNewsItem {
 
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+const JUDOL_SPAM_KEYWORDS = [
+  'slot', 'gacor', 'judol', 'judi', 'poker', 'casino', 'togel', 'maxwin',
+  'pragmatic', 'zeus', 'sbobet', 'rtp', 'jackpot', 'bet88', 'slot88',
+  'judionline', 'judi online', 'bandar judi', 'taruhan online', 'scatter',
+  'olympus', 'mahjong', 'spadegaming', 'habanero', 'microgaming',
+  'bocoran slot', 'link gacor', 'situs judi', 'situs slot', 'agen judi',
+  'agen slot', 'game slot', 'judi bola', 'depo pulsa', 'tanpa potongan',
+  'bocoran rtp', 'mudah menang', 'pasti jp', 'sensasional', 'bonus 100'
+];
+
+export function isJudolOrSpam(text?: string | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return JUDOL_SPAM_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 /**
  * Decode Google News article URL using Google's internal batchexecute API.
  * This is the ONLY reliable method to resolve CBMi... tokens to real publisher URLs
@@ -252,7 +268,7 @@ export async function fetchGoogleNewsTrends(
     console.log(`[Google News] 1. Mengambil RSS Feed Google News...`);
 
     for (const q of subQueries) {
-      if (rawItems.length >= limit * 1.5) break;
+      if (rawItems.length >= limit * 2) break;
 
       try {
         const url = SCRAPER_CONFIG.googleNewsRssUrl(encodeURIComponent(q));
@@ -292,6 +308,17 @@ export async function fetchGoogleNewsTrends(
           const googleNewsUrl = linkMatch ? linkMatch[1] : '';
           const sourceName = sourceMatch ? sourceMatch[1].trim() : 'Google News';
           const sourceBaseUrl = sourceUrlMatch ? sourceUrlMatch[1] : null;
+
+          // Reject any online gambling / judol / spam content
+          if (
+            isJudolOrSpam(title) ||
+            isJudolOrSpam(googleNewsUrl) ||
+            isJudolOrSpam(sourceName) ||
+            isJudolOrSpam(realUrlFromDesc)
+          ) {
+            console.log(`[Google News] 🚫 Judol/Spam Filtered: "${title}"`);
+            continue;
+          }
 
           if (title && googleNewsUrl && !seenTitles.has(title.toLowerCase())) {
             seenTitles.add(title.toLowerCase());
@@ -337,6 +364,12 @@ export async function fetchGoogleNewsTrends(
           // 1. Resolve Google News URL to real publisher article URL via batchexecute
           const realUrl = await resolveGoogleNewsUrl(item);
 
+          // Reject if resolved URL is judol/spam
+          if (isJudolOrSpam(realUrl)) {
+            console.log(`[Google News] [${index}/${topItems.length}] 🚫 Judol URL Filtered: ${realUrl}`);
+            return null;
+          }
+
           // 2. Fetch og:image from real publisher page
           let realOgImage: string | null = null;
           if (realUrl && !realUrl.includes('google.com')) {
@@ -367,7 +400,9 @@ export async function fetchGoogleNewsTrends(
         })
       );
 
-      results.push(...batchResults);
+      // Filter out nulls from Judol URL rejections
+      const validBatch = batchResults.filter((b): b is NonNullable<typeof b> => b !== null);
+      results.push(...validBatch);
 
       // Small delay between batches to avoid rate-limiting
       if (i + BATCH_SIZE < topItems.length) {
